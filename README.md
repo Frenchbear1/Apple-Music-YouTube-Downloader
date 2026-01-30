@@ -1,13 +1,16 @@
 # Apple Music Downloader (Custom Gamdl)
 
-Custom fork of Gamdl with a simplified prompt-driven flow and flat filename output.
+Custom fork of Gamdl with a simplified prompt-driven flow, flat filename output,
+parallel downloads, and a single overall progress bar.
 
 ## ✨ What’s Different in This Fork
 
-- 🧭 **Prompt-first flow** - Run `gamdl`, paste URL(s), then name the folder
+- 🧭 **Prompt-first flow** - Run `apple` (or `gamdl`), paste URL(s), then name the folder
 - 📁 **Flat output** - No artist/album subfolders
 - 🎵 **Filenames** - `Artist - Song Title.m4a`
 - 📝 **Lyrics off by default** - Only the `.m4a` file is created
+- 📊 **Single progress bar** - One bar spans processing → temp prep → downloads
+- ⚡ **Parallel downloads** - Tracks download concurrently for faster completion
 
 Everything else follows upstream behavior.
 
@@ -48,7 +51,7 @@ pip install -e .
 ## 🚀 Usage
 
 ```bash
-gamdl
+apple
 ```
 
 ### Prompts
@@ -61,7 +64,7 @@ gamdl
 **Download a song:**
 
 ```bash
-gamdl
+apple
 ```
 
 Then paste:
@@ -75,6 +78,15 @@ https://music.apple.com/us/album/never-gonna-give-you-up-2022-remaster/162494551
 - Files are saved as `Artist - Song Title.m4a`
 - Saved directly into the folder you name
 - No synced lyrics are downloaded by default
+- Temp files are cleaned up after downloads finish
+
+### Alternate Command
+
+You can still run `gamdl` if you prefer:
+
+```bash
+gamdl
+```
 
 **Interactive Prompt Controls:**
 
@@ -87,7 +99,8 @@ https://music.apple.com/us/album/never-gonna-give-you-up-2022-remaster/162494551
 
 ## ⚙️ Configuration
 
-Configure Gamdl using command-line arguments or a config file (same as upstream).
+Configure Gamdl using command-line arguments or a config file (same as upstream),
+but note this fork forces a flat output layout and filename template.
 
 **Config file location:**
 
