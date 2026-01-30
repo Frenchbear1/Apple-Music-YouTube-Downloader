@@ -140,9 +140,10 @@ async def main(config: CliConfig):
     flat_file_template = "{artist} - {title}"
     no_synced_lyrics = False if config.synced_lyrics_only else True
 
+    temp_path = download_path / ".gamdl_temp"
     base_downloader = AppleMusicBaseDownloader(
         output_path=str(download_path),
-        temp_path=config.temp_path,
+        temp_path=str(temp_path),
         wvd_path=config.wvd_path,
         overwrite=config.overwrite,
         save_cover=config.save_cover,
