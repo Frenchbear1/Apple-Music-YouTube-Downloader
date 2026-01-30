@@ -271,38 +271,52 @@ async def main(config: CliConfig):
         if not download_queue:
             continue
 
-        for download_index, download_item in enumerate(
-            download_queue,
-            1,
-        ):
+        total_tracks = len(download_queue)
+        logger.info(click.style(f"[Queue] {total_tracks} track(s) queued", dim=True))
+
+        semaphore = asyncio.Semaphore(total_tracks)
+
+        async def download_one(index: int, item: DownloadItem, progress):
+            nonlocal error_count
             download_queue_progress = click.style(
-                f"[Track {download_index}/{len(download_queue)}]",
+                f"[Track {index}/{total_tracks}]",
                 dim=True,
             )
             media_title = (
-                download_item.media_metadata["attributes"]["name"]
-                if isinstance(
-                    download_item,
-                    DownloadItem,
-                )
+                item.media_metadata["attributes"]["name"]
+                if isinstance(item, DownloadItem)
                 else "Unknown Title"
             )
-            logger.info(download_queue_progress + f' Downloading "{media_title}"')
+            async with semaphore:
+                logger.info(download_queue_progress + f' Downloading "{media_title}"')
+                try:
+                    await downloader.download(item)
+                    logger.info(
+                        download_queue_progress + f' Finished "{media_title}"'
+                    )
+                except GamdlError as e:
+                    logger.warning(
+                        download_queue_progress + f' Skipping "{media_title}": {e}'
+                    )
+                except KeyboardInterrupt:
+                    exit(1)
+                except Exception:
+                    error_count += 1
+                    logger.error(
+                        download_queue_progress + f' Error downloading "{media_title}"',
+                        exc_info=not config.no_exceptions,
+                    )
+                finally:
+                    progress.update(1)
 
-            try:
-                await downloader.download(download_item)
-            except GamdlError as e:
-                logger.warning(
-                    download_queue_progress + f' Skipping "{media_title}": {e}'
-                )
-                continue
-            except KeyboardInterrupt:
-                exit(1)
-            except Exception as e:
-                error_count += 1
-                logger.error(
-                    download_queue_progress + f' Error downloading "{media_title}"',
-                    exc_info=not config.no_exceptions,
-                )
+        with click.progressbar(
+            length=total_tracks,
+            label="Overall",
+        ) as progress:
+            tasks = [
+                asyncio.create_task(download_one(i, item, progress))
+                for i, item in enumerate(download_queue, 1)
+            ]
+            await asyncio.gather(*tasks)
 
     logger.info(f"Finished with {error_count} error(s)")
