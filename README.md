@@ -1,16 +1,18 @@
-# Apple Music Downloader (Custom Gamdl)
+# Apple Music + YouTube Downloader (Custom Gamdl)
 
-Custom fork of Gamdl with a simplified prompt-driven flow, flat filename output,
-parallel downloads, and a single overall progress bar.
+Custom fork of Gamdl with a simplified prompt-driven flow, Apple Music + YouTube
+support, flat filename output, parallel downloads, and a single overall progress
+bar.
 
 ## ✨ What’s Different in This Fork
 
-- 🧭 **Prompt-first flow** - Run `apple` (or `gamdl`), paste URL(s), then name the folder
+- 🧭 **Source-first flow** - Choose Apple Music or YouTube at startup
 - 📁 **Flat output** - No artist/album subfolders
 - 🎵 **Filenames** - `Artist - Song Title.m4a`
 - 📝 **Lyrics off by default** - Only the `.m4a` file is created
 - 📊 **Single progress bar** - One bar spans processing → temp prep → downloads
-- ⚡ **Parallel downloads** - Tracks download concurrently for faster completion
+- ⚡ **Parallel downloads** - Tracks (and YouTube URLs) download concurrently for faster completion
+- ▶️ **YouTube support** - Download single videos or playlists as M4A
 
 Everything else follows upstream behavior.
 
@@ -25,6 +27,7 @@ Everything else follows upstream behavior.
 - **FFmpeg** - Must be in your system PATH
   - **Windows**: [AnimMouse's FFmpeg Builds](https://github.com/AnimMouse/ffmpeg-stable-autobuild/releases)
   - **Linux**: [John Van Sickle's FFmpeg Builds](https://johnvansickle.com/ffmpeg/)
+ - **yt-dlp** - Installed automatically via `pip install -e .` (required for YouTube)
 
 ### Optional
 
@@ -56,12 +59,14 @@ apple
 
 ### Prompts
 
-1. Paste Apple Music URL(s) (space-separated)
-2. Name the output folder (created in the current directory)
+1. Choose download source: Apple Music or YouTube
+2. Paste URL(s)
+3. Choose folder option (new folder in current directory or existing path)
+4. Downloads start immediately
 
 ### Examples
 
-**Download a song:**
+**Download an Apple Music song:**
 
 ```bash
 apple
@@ -73,12 +78,25 @@ Then paste:
 https://music.apple.com/us/album/never-gonna-give-you-up-2022-remaster/1624945511?i=1624945512
 ```
 
+**Download a YouTube video or playlist:**
+
+```bash
+apple
+```
+
+Choose **YouTube**, then paste:
+
+```bash
+https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
+
 ### Output Naming
 
 - Files are saved as `Artist - Song Title.m4a`
 - Saved directly into the folder you name
 - No synced lyrics are downloaded by default
 - Temp files are cleaned up after downloads finish
+ - YouTube downloads are saved as `Title.m4a`
 
 ### Alternate Command
 

@@ -5,6 +5,7 @@ import sys
 import shutil
 import time
 import threading
+import importlib.util
 from functools import wraps
 from pathlib import Path
 
@@ -145,6 +146,56 @@ async def main(config: CliConfig):
         file_handler = logging.FileHandler(config.log_file, encoding="utf-8")
         file_handler.setFormatter(CustomLoggerFormatter(use_colors=False))
         root_logger.addHandler(file_handler)
+
+    click.echo("Download source:")
+    click.echo("[1] Download from Apple Music")
+    click.echo("[2] Download from YouTube")
+    while True:
+        source_choice = click.prompt(
+            "Choose [1] or [2]",
+            type=str,
+            default="1",
+            show_default=False,
+            prompt_suffix=": ",
+        ).strip()
+        if source_choice in {"1", "2"}:
+            break
+        click.echo("Please enter 1 or 2.")
+
+    if source_choice == "2":
+        yt_script_path = Path(__file__).resolve().parents[2] / "yt2m4a.py"
+        if not yt_script_path.exists():
+            click.echo(
+                click.style(
+                    f"Could not find YouTube script at: {yt_script_path}",
+                    fg="red",
+                ),
+                err=True,
+            )
+            return
+        spec = importlib.util.spec_from_file_location("yt2m4a", yt_script_path)
+        if spec and spec.loader:
+            yt2m4a = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(yt2m4a)
+            if hasattr(yt2m4a, "run_cli"):
+                yt2m4a.run_cli()
+            else:
+                click.echo(
+                    click.style(
+                        "YouTube script missing run_cli().",
+                        fg="red",
+                    ),
+                    err=True,
+                )
+        else:
+            click.echo(
+                click.style(
+                    "Failed to load YouTube script.",
+                    fg="red",
+                ),
+                err=True,
+            )
+        return
 
     logger.info(f"Starting Gamdl {__version__}")
 

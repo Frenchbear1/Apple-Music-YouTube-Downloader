@@ -6,6 +6,7 @@ __pycache__
 !pyproject.toml
 !README.md
 !uv.lock
+!yt2m4a.py
 
 # Local secrets
 cookies.txt
