@@ -2,10 +2,13 @@ import asyncio
 import logging
 import sys
 import shutil
+import time
 from functools import wraps
 from pathlib import Path
 
 import click
+import httpx
+import httpcore
 import colorama
 from dataclass_click import dataclass_click
 
@@ -147,6 +150,9 @@ async def main(config: CliConfig):
     flat_folder_template = ""
     flat_file_template = "{artist} - {title}"
     artist_folder_template = "{artist}"
+    truncate = config.truncate
+    if truncate is None and use_artist_folders:
+        truncate = 100
     no_synced_lyrics = False if config.synced_lyrics_only else True
 
     temp_path = download_path / ".gamdl_temp"
@@ -177,7 +183,7 @@ async def main(config: CliConfig):
         date_tag_template=config.date_tag_template,
         exclude_tags=config.exclude_tags,
         cover_size=config.cover_size,
-        truncate=config.truncate,
+        truncate=truncate,
         silent=True,
     )
     song_downloader = AppleMusicSongDownloader(
@@ -347,25 +353,47 @@ async def main(config: CliConfig):
         async def download_one(index: int, item: DownloadItem):
             nonlocal error_count
             async with semaphore:
-                try:
-                    await downloader.download(item)
-                except GamdlError as e:
-                    logger.warning(
-                        click.style(f"[Track {index}/{total_tracks}]", dim=True)
-                        + f" Skipping track: {e}"
-                    )
-                except KeyboardInterrupt:
-                    exit(1)
-                except Exception:
-                    error_count += 1
-                    logger.error(
-                        click.style(f"[Track {index}/{total_tracks}]", dim=True)
-                        + " Error downloading track",
-                        exc_info=not config.no_exceptions,
-                    )
-                finally:
-                    async with progress_lock:
-                        update_phase(progress, 2, total_tracks)
+                current_item = item
+                for attempt in range(3):
+                    try:
+                        await downloader.download(current_item)
+                        break
+                    except (httpx.ReadError, httpcore.ReadError):
+                        if attempt >= 2:
+                            logger.warning(
+                                click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                                + " Skipping track (network error)"
+                            )
+                            break
+                        time.sleep(1.5 * (attempt + 1))
+                        current_item = await downloader.get_single_download_item_no_filter(
+                            current_item.media_metadata,
+                            current_item.playlist_metadata,
+                        )
+                    except FileNotFoundError:
+                        logger.warning(
+                            click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                            + " Skipping track (temp file missing)"
+                        )
+                        break
+                    except GamdlError as e:
+                        logger.warning(
+                            click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                            + f" Skipping track: {e}"
+                        )
+                        break
+                    except KeyboardInterrupt:
+                        exit(1)
+                    except Exception:
+                        error_count += 1
+                        logger.error(
+                            click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                            + " Error downloading track",
+                            exc_info=not config.no_exceptions,
+                        )
+                        break
+                async with progress_lock:
+                    update_phase(progress, 2, total_tracks)
 
         tasks = [
             asyncio.create_task(download_one(i, item))
