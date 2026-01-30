@@ -253,6 +253,11 @@ async def main(config: CliConfig):
         phase_weights = [33, 33, 34]
         total_tracks = 0
         progress_lock = asyncio.Lock()
+        progress = click.progressbar(
+            length=100,
+            label="Overall",
+        )
+        progress.__enter__()
 
         def update_phase(progress, phase_index: int, steps_total: int):
             if steps_total <= 0:
@@ -268,111 +273,109 @@ async def main(config: CliConfig):
                 progress.update(remaining)
                 phase_applied[phase_index] += remaining
         try:
-            with click.progressbar(
-                length=100,
-                label="Overall",
-            ) as progress:
-                url_info = downloader.get_url_info(url)
-                if not url_info:
-                    logger.warning(
-                        url_progress + f' Could not parse "{url}", skipping.',
-                    )
-                    fill_phase(progress, 0)
-                    fill_phase(progress, 1)
-                    fill_phase(progress, 2)
-                    continue
-
-                def progress_total_cb(count: int):
-                    nonlocal total_tracks
-                    if total_tracks <= 0:
-                        total_tracks = max(1, count)
-
-                def progress_cb(_: int):
-                    if total_tracks > 0:
-                        update_phase(progress, 0, total_tracks)
-
-                download_queue = await downloader.get_download_queue(
-                    url_info,
-                    progress_cb=progress_cb,
-                    progress_total_cb=progress_total_cb,
+            url_info = downloader.get_url_info(url)
+            if not url_info:
+                logger.warning(
+                    url_progress + f' Could not parse "{url}", skipping.',
                 )
-                if not download_queue:
-                    logger.warning(
-                        url_progress
-                        + f' No downloadable media found for "{url}", skipping.',
-                    )
-                    fill_phase(progress, 0)
-                    fill_phase(progress, 1)
-                    fill_phase(progress, 2)
-                    continue
+                progress.__exit__(None, None, None)
+                continue
 
+            def progress_total_cb(count: int):
+                nonlocal total_tracks
                 if total_tracks <= 0:
-                    total_tracks = len(download_queue)
-                logger.info(
-                    click.style(f"[Queue] {total_tracks} track(s) queued", dim=True)
+                    total_tracks = max(1, count)
+
+            def progress_cb(_: int):
+                if total_tracks > 0:
+                    update_phase(progress, 0, total_tracks)
+
+            download_queue = await downloader.get_download_queue(
+                url_info,
+                progress_cb=progress_cb,
+                progress_total_cb=progress_total_cb,
+            )
+            if not download_queue:
+                logger.warning(
+                    url_progress
+                    + f' No downloadable media found for "{url}", skipping.',
                 )
+                progress.__exit__(None, None, None)
+                continue
 
-                fill_phase(progress, 0)
-
-                temp_path.mkdir(parents=True, exist_ok=True)
-
-                async def smooth_phase_two():
-                    # Smooth 33->66% over a short, track-scaled duration.
-                    duration = min(20.0, max(3.0, total_tracks * 0.15))
-                    step_time = duration / phase_weights[1]
-                    for _ in range(phase_weights[1]):
-                        await asyncio.sleep(step_time)
-                        update_phase(progress, 1, phase_weights[1])
-
-                phase_two_task = asyncio.create_task(smooth_phase_two())
-                for item in download_queue:
-                    if getattr(item, "random_uuid", None):
-                        (temp_path / TEMP_PATH_TEMPLATE.format(item.random_uuid)).mkdir(
-                            parents=True,
-                            exist_ok=True,
-                        )
-                await phase_two_task
-                fill_phase(progress, 1)
-
-                semaphore = asyncio.Semaphore(total_tracks)
-
-                async def download_one(index: int, item: DownloadItem):
-                    nonlocal error_count
-                    async with semaphore:
-                        try:
-                            await downloader.download(item)
-                        except GamdlError as e:
-                            logger.warning(
-                                click.style(f"[Track {index}/{total_tracks}]", dim=True)
-                                + f" Skipping track: {e}"
-                            )
-                        except KeyboardInterrupt:
-                            exit(1)
-                        except Exception:
-                            error_count += 1
-                            logger.error(
-                                click.style(f"[Track {index}/{total_tracks}]", dim=True)
-                                + " Error downloading track",
-                                exc_info=not config.no_exceptions,
-                            )
-                        finally:
-                            async with progress_lock:
-                                update_phase(progress, 2, total_tracks)
-
-                tasks = [
-                    asyncio.create_task(download_one(i, item))
-                    for i, item in enumerate(download_queue, 1)
-                ]
-                await asyncio.gather(*tasks)
-                fill_phase(progress, 2)
+            if total_tracks <= 0:
+                total_tracks = len(download_queue)
+            logger.info(
+                click.style(f"[Queue] {total_tracks} track(s) queued", dim=True)
+            )
         except KeyboardInterrupt:
             exit(1)
-        except Exception as e:
+        except Exception:
             error_count += 1
             logger.error(
                 url_progress + f' Error processing "{url}"',
                 exc_info=not config.no_exceptions,
             )
+            progress.__exit__(None, None, None)
+            continue
+        fill_phase(progress, 0)
+
+        temp_path.mkdir(parents=True, exist_ok=True)
+        phase_two_done = asyncio.Event()
+
+        async def smooth_phase_two():
+            # Smooth 33->66% over a short, track-scaled duration.
+            duration = min(20.0, max(3.0, total_tracks * 0.15))
+            step_time = duration / phase_weights[1]
+            for _ in range(phase_weights[1]):
+                if phase_two_done.is_set():
+                    break
+                await asyncio.sleep(step_time)
+                update_phase(progress, 1, phase_weights[1])
+
+        phase_two_task = asyncio.create_task(smooth_phase_two())
+        for item in download_queue:
+            if getattr(item, "random_uuid", None):
+                (temp_path / TEMP_PATH_TEMPLATE.format(item.random_uuid)).mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+        phase_two_done.set()
+        await phase_two_task
+        fill_phase(progress, 1)
+
+        semaphore = asyncio.Semaphore(total_tracks)
+
+        async def download_one(index: int, item: DownloadItem):
+            nonlocal error_count
+            async with semaphore:
+                try:
+                    await downloader.download(item)
+                except GamdlError as e:
+                    logger.warning(
+                        click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                        + f" Skipping track: {e}"
+                    )
+                except KeyboardInterrupt:
+                    exit(1)
+                except Exception:
+                    error_count += 1
+                    logger.error(
+                        click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                        + " Error downloading track",
+                        exc_info=not config.no_exceptions,
+                    )
+                finally:
+                    async with progress_lock:
+                        update_phase(progress, 2, total_tracks)
+
+        tasks = [
+            asyncio.create_task(download_one(i, item))
+            for i, item in enumerate(download_queue, 1)
+        ]
+        await asyncio.gather(*tasks)
+        fill_phase(progress, 2)
+        progress.__exit__(None, None, None)
 
         try:
             if temp_path.exists():
