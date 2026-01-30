@@ -1,10 +1,10 @@
 import asyncio
 import logging
+import os
 import sys
 import shutil
 import time
 import threading
-import os
 from functools import wraps
 from pathlib import Path
 
@@ -41,6 +41,8 @@ from .constants import X_NOT_IN_PATH
 from .utils import CustomLoggerFormatter, prompt_path
 
 logger = logging.getLogger(__name__)
+
+
 _current_progress = None
 
 
@@ -207,13 +209,39 @@ async def main(config: CliConfig):
         if raw_urls:
             urls = raw_urls.split()
 
-    download_folder_name = click.prompt(
-        "Download folder name (created in current directory)",
-        default="Apple Music",
-        show_default=True,
-    )
-    download_path = Path.cwd() / download_folder_name
-    download_path.mkdir(parents=True, exist_ok=True)
+    click.echo("Folder options:")
+    click.echo("[1] Make a new folder in the current directory")
+    click.echo("[2] Add to an existing folder by path")
+    while True:
+        folder_choice = click.prompt(
+            "Choose [1] or [2]",
+            type=str,
+            default="1",
+            show_default=False,
+            prompt_suffix=": ",
+        ).strip()
+        if folder_choice in {"1", "2"}:
+            break
+        click.echo("Please enter 1 or 2.")
+    if folder_choice == "1":
+        download_folder_name = click.prompt(
+            "Download folder name (created in current directory)",
+            default="Apple Music",
+            show_default=True,
+        )
+        download_path = Path.cwd() / download_folder_name
+        download_path.mkdir(parents=True, exist_ok=True)
+    else:
+        raw_folder_path = click.prompt(
+            "Folder path",
+            default="",
+            show_default=False,
+        ).strip()
+        if raw_folder_path.startswith('"') and raw_folder_path.endswith('"'):
+            raw_folder_path = raw_folder_path[1:-1].strip()
+        download_path = Path(raw_folder_path)
+        download_path.mkdir(parents=True, exist_ok=True)
+        click.echo(click.style(f"Using folder: {download_path}", fg="green"))
 
     use_artist_folders = click.confirm(
         "Group songs into artist folders?",
