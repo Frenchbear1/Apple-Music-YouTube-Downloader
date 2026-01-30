@@ -3,6 +3,8 @@ import logging
 import sys
 import shutil
 import time
+import threading
+import os
 from functools import wraps
 from pathlib import Path
 
@@ -39,6 +41,76 @@ from .constants import X_NOT_IN_PATH
 from .utils import CustomLoggerFormatter, prompt_path
 
 logger = logging.getLogger(__name__)
+_current_progress = None
+
+
+class ProgressDisplay:
+    def __init__(self, total: int = 100, label: str = "Overall", stream=None):
+        self.total = max(1, total)
+        self.label = label
+        self.stream = stream or sys.stdout
+        self.current = 0
+        self.active = False
+        self._lock = threading.RLock()
+
+    def start(self):
+        with self._lock:
+            self.active = True
+            self.render()
+
+    def update(self, steps: int):
+        if steps <= 0:
+            return
+        with self._lock:
+            if not self.active:
+                return
+            self.current = min(self.total, self.current + steps)
+            self.render()
+
+    def clear(self):
+        if not self.active:
+            return
+        self.stream.write("\r\x1b[2K")
+        self.stream.flush()
+
+    def render(self):
+        if not self.active:
+            return
+        percent = int((self.current / self.total) * 100)
+        width = 30
+        filled = int(width * percent / 100)
+        bar = "#" * filled + "-" * (width - filled)
+        self.stream.write(f"\r{self.label} [{bar}] {percent:3d}%")
+        self.stream.flush()
+
+    def finish(self):
+        with self._lock:
+            if not self.active:
+                return
+            self.current = self.total
+            self.render()
+            self.stream.write("\n")
+            self.stream.flush()
+            self.active = False
+
+
+class ProgressAwareStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        progress = _current_progress
+        if progress and progress.active:
+            progress.clear()
+            super().emit(record)
+            progress.render()
+        else:
+            super().emit(record)
+
+
+def echo_stderr(message: str, progress: ProgressDisplay | None):
+    if progress and progress.active:
+        progress.clear()
+    click.echo(message, file=sys.stderr)
+    if progress and progress.active:
+        progress.render()
 
 
 def make_sync(func):
@@ -56,13 +128,14 @@ def make_sync(func):
 @ConfigFile.loader
 @make_sync
 async def main(config: CliConfig):
+    global _current_progress
     colorama.just_fix_windows_console()
 
     root_logger = logging.getLogger(__name__.split(".")[0])
     root_logger.setLevel(config.log_level)
     root_logger.propagate = False
 
-    stream_handler = logging.StreamHandler(sys.stderr)
+    stream_handler = ProgressAwareStreamHandler(sys.stderr)
     stream_handler.setFormatter(CustomLoggerFormatter())
     root_logger.addHandler(stream_handler)
 
@@ -263,16 +336,12 @@ async def main(config: CliConfig):
         download_queue = None
         phase_accum = [0.0, 0.0, 0.0]
         phase_applied = [0, 0, 0]
-        phase_weights = [33, 33, 34]
+        phase_weights = [25, 25, 50]
         total_tracks = 0
         progress_lock = asyncio.Lock()
-        progress = click.progressbar(
-            length=100,
-            label="Overall",
-            show_eta=False,
-            file=sys.stdout,
-        )
-        progress.__enter__()
+        progress = ProgressDisplay(total=100, label="Overall", stream=sys.stdout)
+        _current_progress = progress
+        progress.start()
 
         def update_phase(progress, phase_index: int, steps_total: int):
             if steps_total <= 0:
@@ -293,7 +362,8 @@ async def main(config: CliConfig):
                 logger.warning(
                     url_progress + f' Could not parse "{url}", skipping.',
                 )
-                progress.__exit__(None, None, None)
+                progress.finish()
+                _current_progress = None
                 continue
 
             def progress_total_cb(count: int):
@@ -315,7 +385,8 @@ async def main(config: CliConfig):
                     url_progress
                     + f' No downloadable media found for "{url}", skipping.',
                 )
-                progress.__exit__(None, None, None)
+                progress.finish()
+                _current_progress = None
                 continue
 
             if total_tracks <= 0:
@@ -331,15 +402,13 @@ async def main(config: CliConfig):
                 url_progress + f' Error processing "{url}"',
                 exc_info=not config.no_exceptions,
             )
-            progress.__exit__(None, None, None)
+            progress.finish()
+            _current_progress = None
             continue
-        click.echo("Phase: processing complete", file=sys.stderr)
+        echo_stderr("Phase: processing & preparing temp files", progress)
         fill_phase(progress, 0)
-
-        click.echo("Phase: preparing temp files", file=sys.stderr)
         temp_path.mkdir(parents=True, exist_ok=True)
-        phase_two_total_seconds = max(5.0, min(20.0, total_tracks * 0.2))
-        phase_two_step_delay = phase_two_total_seconds / max(1, total_tracks)
+        phase_two_step_delay = 0.0
         for item in download_queue:
             if getattr(item, "random_uuid", None):
                 (temp_path / TEMP_PATH_TEMPLATE.format(item.random_uuid)).mkdir(
@@ -347,11 +416,13 @@ async def main(config: CliConfig):
                     exist_ok=True,
                 )
             update_phase(progress, 1, total_tracks)
-            await asyncio.sleep(phase_two_step_delay)
+            if phase_two_step_delay:
+                await asyncio.sleep(phase_two_step_delay)
         fill_phase(progress, 1)
 
-        click.echo("Phase: downloading", file=sys.stderr)
-        semaphore = asyncio.Semaphore(4)
+        echo_stderr("Phase: downloading", progress)
+        cpu_limit = max(1, os.cpu_count() or 1)
+        semaphore = asyncio.Semaphore(cpu_limit)
 
         async def download_one(index: int, item: DownloadItem):
             nonlocal error_count
@@ -368,7 +439,6 @@ async def main(config: CliConfig):
                                 + " Skipping track (network error)"
                             )
                             break
-                        time.sleep(1.5 * (attempt + 1))
                         current_item = await downloader.get_single_download_item_no_filter(
                             current_item.media_metadata,
                             current_item.playlist_metadata,
@@ -404,7 +474,8 @@ async def main(config: CliConfig):
         ]
         await asyncio.gather(*tasks)
         fill_phase(progress, 2)
-        progress.__exit__(None, None, None)
+        progress.finish()
+        _current_progress = None
 
         try:
             if temp_path.exists():

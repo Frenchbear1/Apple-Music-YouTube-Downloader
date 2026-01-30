@@ -16,6 +16,20 @@ from .enums import DownloadMode, RemuxMode
 from .hardcoded_wvd import HARDCODED_WVD
 
 
+class _YtDlpLogger:
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def debug(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        self.errors.append(str(msg))
+
+
 class AppleMusicBaseDownloader:
     def __init__(
         self,
@@ -245,6 +259,7 @@ class AppleMusicBaseDownloader:
         )
 
     def _download_ytdlp(self, stream_url: str, download_path: str) -> None:
+        ytdlp_logger = _YtDlpLogger()
         with YoutubeDL(
             {
                 "quiet": True,
@@ -255,9 +270,20 @@ class AppleMusicBaseDownloader:
                 "fixup": "never",
                 "noprogress": self.silent,
                 "allowed_extractors": ["generic"],
+                "retries": 3,
+                "fragment_retries": 3,
+                "socket_timeout": 30,
+                "logger": ytdlp_logger,
             }
         ) as ydl:
-            ydl.download(stream_url)
+            result = ydl.download([stream_url])
+        if result != 0:
+            message = (
+                ytdlp_logger.errors[-1]
+                if ytdlp_logger.errors
+                else f"yt-dlp failed with code {result}"
+            )
+            raise Exception(message)
 
     async def download_nm3u8dlre(self, stream_url: str, download_path: str):
         download_path_obj = Path(download_path)

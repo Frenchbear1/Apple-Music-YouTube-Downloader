@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import typing
@@ -486,22 +487,44 @@ class AppleMusicApi:
         challenge: str,
         key_system: str = "com.widevine.alpha",
     ) -> dict:
-        response = await self.client.post(
-            LICENSE_API_URL,
-            json={
-                "challenge": challenge,
-                "key-system": key_system,
-                "uri": track_uri,
-                "adamId": track_id,
-                "isLibrary": False,
-                "user-initiated": True,
-            },
-        )
-        raise_for_status(response)
+        last_error_text = None
+        for attempt in range(3):
+            try:
+                response = await self.client.post(
+                    LICENSE_API_URL,
+                    json={
+                        "challenge": challenge,
+                        "key-system": key_system,
+                        "uri": track_uri,
+                        "adamId": track_id,
+                        "isLibrary": False,
+                        "user-initiated": True,
+                    },
+                )
+            except (httpx.ReadTimeout, httpx.TimeoutException, httpx.TransportError) as e:
+                last_error_text = str(e)
+                if attempt >= 2:
+                    break
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
 
-        license_exchange = safe_json(response)
-        if not "license" in license_exchange:
-            raise Exception("Error getting license exchange:", response.text)
-        logger.debug(f"License exchange: {license_exchange}")
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
+                last_error_text = response.text
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
 
-        return license_exchange
+            raise_for_status(response)
+
+            license_exchange = safe_json(response)
+            if license_exchange.get("status") == -1003 and attempt < 2:
+                last_error_text = response.text
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            if not "license" in license_exchange:
+                last_error_text = response.text
+                break
+
+            logger.debug(f"License exchange: {license_exchange}")
+            return license_exchange
+
+        raise Exception("Error getting license exchange:", last_error_text or "")
