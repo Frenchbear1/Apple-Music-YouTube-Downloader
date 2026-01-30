@@ -154,14 +154,13 @@ class AppleMusicDownloader:
             download_items = await safe_gather(*tasks)
             return download_items
 
-        task_map = {asyncio.create_task(task): idx for idx, task in enumerate(tasks)}
-        results: list[DownloadItem | None] = [None] * len(task_map)
-        for task in asyncio.as_completed(task_map):
-            idx = task_map[task]
-            results[idx] = await task
+        task_list = [asyncio.create_task(task) for task in tasks]
+        results: list[DownloadItem] = []
+        for done in asyncio.as_completed(task_list):
+            results.append(await done)
             progress_cb(1)
 
-        return typing.cast(list[DownloadItem], results)
+        return results
 
     async def get_artist_download_items(
         self,
@@ -307,16 +306,13 @@ class AppleMusicDownloader:
             download_items = await safe_gather(*music_video_tasks)
             return download_items
 
-        task_map = {
-            asyncio.create_task(task): idx for idx, task in enumerate(music_video_tasks)
-        }
-        results: list[DownloadItem | None] = [None] * len(task_map)
-        for task in asyncio.as_completed(task_map):
-            idx = task_map[task]
-            results[idx] = await task
+        task_list = [asyncio.create_task(task) for task in music_video_tasks]
+        results: list[DownloadItem] = []
+        for done in asyncio.as_completed(task_list):
+            results.append(await done)
             progress_cb(1)
 
-        return typing.cast(list[DownloadItem], results)
+        return results
 
         return download_items
 
