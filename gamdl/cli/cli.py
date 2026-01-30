@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import sys
 import shutil
 from functools import wraps
 from pathlib import Path
@@ -256,6 +257,8 @@ async def main(config: CliConfig):
         progress = click.progressbar(
             length=100,
             label="Overall",
+            show_eta=False,
+            file=sys.stdout,
         )
         progress.__enter__()
 
@@ -321,7 +324,8 @@ async def main(config: CliConfig):
         fill_phase(progress, 0)
 
         temp_path.mkdir(parents=True, exist_ok=True)
-        phase_two_step_delay = 0.05
+        phase_two_total_seconds = max(5.0, min(20.0, total_tracks * 0.2))
+        phase_two_step_delay = phase_two_total_seconds / max(1, total_tracks)
         for item in download_queue:
             if getattr(item, "random_uuid", None):
                 (temp_path / TEMP_PATH_TEMPLATE.format(item.random_uuid)).mkdir(
