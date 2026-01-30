@@ -139,8 +139,14 @@ async def main(config: CliConfig):
     download_path = Path.cwd() / download_folder_name
     download_path.mkdir(parents=True, exist_ok=True)
 
+    use_artist_folders = click.confirm(
+        "Group songs into artist folders?",
+        default=False,
+    )
+
     flat_folder_template = ""
     flat_file_template = "{artist} - {title}"
+    artist_folder_template = "{artist}"
     no_synced_lyrics = False if config.synced_lyrics_only else True
 
     temp_path = download_path / ".gamdl_temp"
@@ -161,9 +167,9 @@ async def main(config: CliConfig):
         download_mode=config.download_mode,
         remux_mode=config.remux_mode,
         cover_format=config.cover_format,
-        album_folder_template=flat_folder_template,
-        compilation_folder_template=flat_folder_template,
-        no_album_folder_template=flat_folder_template,
+        album_folder_template=artist_folder_template if use_artist_folders else flat_folder_template,
+        compilation_folder_template=artist_folder_template if use_artist_folders else flat_folder_template,
+        no_album_folder_template=artist_folder_template if use_artist_folders else flat_folder_template,
         single_disc_file_template=flat_file_template,
         multi_disc_file_template=flat_file_template,
         no_album_file_template=flat_file_template,
@@ -336,7 +342,7 @@ async def main(config: CliConfig):
             await asyncio.sleep(phase_two_step_delay)
         fill_phase(progress, 1)
 
-        semaphore = asyncio.Semaphore(total_tracks)
+        semaphore = asyncio.Semaphore(4)
 
         async def download_one(index: int, item: DownloadItem):
             nonlocal error_count
