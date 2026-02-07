@@ -50,7 +50,7 @@ pip install -e .
 ## 🚀 Usage
 
 ```bash
-go
+gamdl
 ```
 
 ### Prompts
@@ -65,7 +65,7 @@ go
 **Download an Apple Music song:**
 
 ```bash
-go
+gamdl
 ```
 
 Then paste:
@@ -77,7 +77,7 @@ https://music.apple.com/us/album/never-gonna-give-you-up-2022-remaster/162494551
 **Download a YouTube video or playlist:**
 
 ```bash
-go
+gamdl
 ```
 
 Choose **YouTube**, then paste:
@@ -92,14 +92,6 @@ https://www.youtube.com/watch?v=dQw4w9WgXcQ
 - Saved directly into the folder you name
 - Temp files are cleaned up after downloads finish
  - YouTube downloads are saved as `Title.m4a`
-
-### Alternate Command
-
-You can still run `gamdl` if you prefer:
-
-```bash
-gamdl
-```
 
 **Interactive Prompt Controls:**
 
