@@ -1,4 +1,5 @@
 import logging
+from copy import copy
 from enum import Enum
 from pathlib import Path
 
@@ -54,15 +55,25 @@ class CustomLoggerFormatter(logging.Formatter):
         self.use_colors = use_colors
 
     def format(self, record: logging.LogRecord) -> str:
-        return logging.Formatter(
+        # Keep warning/error output to a single concise line.
+        sanitized = copy(record)
+        if sanitized.levelno >= logging.WARNING:
+            sanitized.exc_info = None
+            sanitized.exc_text = None
+
+        formatted = logging.Formatter(
             (
-                click.style(self.base_format, **self.format_colors.get(record.levelno))
+                click.style(
+                    self.base_format,
+                    **self.format_colors.get(sanitized.levelno),
+                )
                 if self.use_colors
                 else self.base_format
             )
             + " %(message)s",
             datefmt=self.date_format,
-        ).format(record)
+        ).format(sanitized)
+        return " ".join(formatted.replace("\r", " ").replace("\n", " ").split())
 
 
 def prompt_path(

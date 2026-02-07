@@ -26,11 +26,14 @@ class AppleMusicApi:
         language: str = "en-US",
         media_user_token: str | None = None,
         developer_token: str | None = None,
+        api_request_limit: int = 6,
     ) -> None:
         self.storefront = storefront
         self.language = language
         self.media_user_token = media_user_token
         self.token = developer_token
+        self.api_request_limit = max(1, api_request_limit)
+        self.api_request_semaphore = asyncio.Semaphore(self.api_request_limit)
 
     @classmethod
     async def create_from_netscape_cookies(
@@ -127,7 +130,20 @@ class AppleMusicApi:
             },
             follow_redirects=True,
             timeout=60.0,
+            limits=httpx.Limits(
+                max_connections=24,
+                max_keepalive_connections=12,
+            ),
         )
+
+    @staticmethod
+    def _error_text(error: Exception) -> str:
+        text = str(error).strip()
+        return text or error.__class__.__name__
+
+    @staticmethod
+    def _is_retryable_status(status_code: int) -> bool:
+        return status_code in {408, 425, 429, 500, 502, 503, 504}
 
     async def _get_token(self) -> str:
         response = await self.client.get(APPLE_MUSIC_HOMEPAGE_URL)
@@ -464,21 +480,48 @@ class AppleMusicApi:
         self,
         track_id: str,
     ) -> dict:
-        response = await self.client.post(
-            WEBPLAYBACK_API_URL,
-            json={
-                "salableAdamId": track_id,
-                "language": self.language,
-            },
+        last_error_text = None
+        for attempt in range(7):
+            try:
+                async with self.api_request_semaphore:
+                    response = await self.client.post(
+                        WEBPLAYBACK_API_URL,
+                        json={
+                            "salableAdamId": track_id,
+                            "language": self.language,
+                        },
+                    )
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                last_error_text = self._error_text(e)
+                if attempt >= 6:
+                    break
+                await asyncio.sleep(min(4.0, 0.3 * (2**attempt)))
+                continue
+
+            if self._is_retryable_status(response.status_code):
+                last_error_text = (
+                    f"HTTP error {response.status_code}: {response.text[:200]}"
+                )
+                if attempt >= 6:
+                    break
+                await asyncio.sleep(min(4.0, 0.3 * (2**attempt)))
+                continue
+
+            raise_for_status(response)
+
+            webplayback = safe_json(response)
+            if "songList" in webplayback:
+                logger.debug(f"Webplayback: {webplayback}")
+                return webplayback
+
+            # Non-network failures should fail fast (e.g. explicit content restrictions).
+            raise Exception(
+                f"Error getting webplayback: {response.text[:500] or 'empty response'}"
+            )
+
+        raise Exception(
+            f"Error getting webplayback: {last_error_text or 'retry attempts exhausted'}"
         )
-        raise_for_status(response)
-
-        webplayback = safe_json(response)
-        if not "songList" in webplayback:
-            raise Exception("Error getting webplayback:", response.text)
-        logger.debug(f"Webplayback: {webplayback}")
-
-        return webplayback
 
     async def get_license_exchange(
         self,
@@ -488,43 +531,48 @@ class AppleMusicApi:
         key_system: str = "com.widevine.alpha",
     ) -> dict:
         last_error_text = None
-        for attempt in range(3):
+        for attempt in range(7):
             try:
-                response = await self.client.post(
-                    LICENSE_API_URL,
-                    json={
-                        "challenge": challenge,
-                        "key-system": key_system,
-                        "uri": track_uri,
-                        "adamId": track_id,
-                        "isLibrary": False,
-                        "user-initiated": True,
-                    },
-                )
+                async with self.api_request_semaphore:
+                    response = await self.client.post(
+                        LICENSE_API_URL,
+                        json={
+                            "challenge": challenge,
+                            "key-system": key_system,
+                            "uri": track_uri,
+                            "adamId": track_id,
+                            "isLibrary": False,
+                            "user-initiated": True,
+                        },
+                    )
             except (httpx.ReadTimeout, httpx.TimeoutException, httpx.TransportError) as e:
-                last_error_text = str(e)
-                if attempt >= 2:
+                last_error_text = self._error_text(e)
+                if attempt >= 6:
                     break
-                await asyncio.sleep(0.5 * (attempt + 1))
+                await asyncio.sleep(min(4.0, 0.3 * (2**attempt)))
                 continue
 
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
-                last_error_text = response.text
-                await asyncio.sleep(0.5 * (attempt + 1))
+            if self._is_retryable_status(response.status_code) and attempt < 6:
+                last_error_text = (
+                    f"HTTP error {response.status_code}: {response.text[:200]}"
+                )
+                await asyncio.sleep(min(4.0, 0.3 * (2**attempt)))
                 continue
 
             raise_for_status(response)
 
             license_exchange = safe_json(response)
-            if license_exchange.get("status") == -1003 and attempt < 2:
-                last_error_text = response.text
-                await asyncio.sleep(0.5 * (attempt + 1))
+            if license_exchange.get("status") == -1003 and attempt < 6:
+                last_error_text = response.text[:200] or "status -1003"
+                await asyncio.sleep(min(4.0, 0.3 * (2**attempt)))
                 continue
             if not "license" in license_exchange:
-                last_error_text = response.text
+                last_error_text = response.text[:200] or "missing license in response"
                 break
 
             logger.debug(f"License exchange: {license_exchange}")
             return license_exchange
 
-        raise Exception("Error getting license exchange:", last_error_text or "")
+        raise Exception(
+            f"Error getting license exchange: {last_error_text or 'retry attempts exhausted'}"
+        )

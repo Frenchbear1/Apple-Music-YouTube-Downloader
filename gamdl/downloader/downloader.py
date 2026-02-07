@@ -53,6 +53,27 @@ class AppleMusicDownloader:
         self.skip_processing = skip_processing
         self.flat_filter = flat_filter
 
+    async def _gather_with_progress_limit(
+        self,
+        tasks: list[typing.Awaitable[DownloadItem]],
+        progress_cb: typing.Callable[[int], None] | None = None,
+        limit: int = 6,
+    ) -> list[DownloadItem]:
+        semaphore = asyncio.Semaphore(max(1, limit))
+
+        async def bounded(task: typing.Awaitable[DownloadItem]) -> DownloadItem:
+            async with semaphore:
+                return await task
+
+        wrapped_tasks = [asyncio.create_task(bounded(task)) for task in tasks]
+        results: list[DownloadItem] = []
+        for done in asyncio.as_completed(wrapped_tasks):
+            results.append(await done)
+            if progress_cb:
+                progress_cb(1)
+
+        return results
+
     async def get_single_download_item(
         self,
         media_metadata: dict,
@@ -154,13 +175,12 @@ class AppleMusicDownloader:
             download_items = await safe_gather(*tasks)
             return download_items
 
-        task_list = [asyncio.create_task(task) for task in tasks]
-        results: list[DownloadItem] = []
-        for done in asyncio.as_completed(task_list):
-            results.append(await done)
-            progress_cb(1)
-
-        return results
+        prefetch_limit = getattr(self.interface.apple_music_api, "api_request_limit", 6)
+        return await self._gather_with_progress_limit(
+            tasks,
+            progress_cb=progress_cb,
+            limit=prefetch_limit,
+        )
 
     async def get_artist_download_items(
         self,
@@ -306,13 +326,12 @@ class AppleMusicDownloader:
             download_items = await safe_gather(*music_video_tasks)
             return download_items
 
-        task_list = [asyncio.create_task(task) for task in music_video_tasks]
-        results: list[DownloadItem] = []
-        for done in asyncio.as_completed(task_list):
-            results.append(await done)
-            progress_cb(1)
-
-        return results
+        prefetch_limit = getattr(self.interface.apple_music_api, "api_request_limit", 6)
+        return await self._gather_with_progress_limit(
+            music_video_tasks,
+            progress_cb=progress_cb,
+            limit=prefetch_limit,
+        )
 
         return download_items
 

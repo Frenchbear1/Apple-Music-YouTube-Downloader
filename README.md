@@ -8,6 +8,8 @@ support, and parallel downloads.
 - 🧭 **Source-first flow** - Choose Apple Music or YouTube at startup
 - 🎵 **Filenames** - `Artist - Song Title.m4a`
 - ⚡ **Parallel downloads** - Tracks (and YouTube URLs) download concurrently for faster completion
+- 📉 **Stable high-speed mode** - `--max-concurrency` limits request bursts to avoid timeout floods
+- 📄 **Failure PDF report** - Failed Apple Music tracks are exported to `failed_downloads_report.pdf`
 - ▶️ **YouTube support** - Download single videos or playlists as M4A
 
 Everything else follows upstream behavior.
@@ -124,6 +126,7 @@ The file is created automatically on first run. Command-line arguments override 
 | `--log-level`                   | Logging level                   | `INFO`                                         |
 | `--log-file`                    | Log file path                   | -                                              |
 | `--no-exceptions`               | Don't print exceptions          | `false`                                        |
+| `--max-concurrency`             | Max parallel track downloads    | `12`                                           |
 | `--no-config-file`, `-n`        | Don't use a config file         | `false`                                        |
 | **Apple Music Options**         |                                 |                                                |
 | `--cookies-path`, `-c`          | Cookies file path               | `./cookies.txt`                                |
@@ -196,6 +199,7 @@ The file is created automatically on first run. Command-line arguments override 
 ### Logging Level
 
 - `DEBUG`, `INFO`, `WARNING`, `ERROR`
+- Warning and error messages are printed as single-line entries (no multiline tracebacks).
 
 ### Download Mode
 

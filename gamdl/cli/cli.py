@@ -6,8 +6,10 @@ import shutil
 import time
 import threading
 import importlib.util
+import textwrap
 from functools import wraps
 from pathlib import Path
+from dataclasses import dataclass
 
 import click
 import httpx
@@ -45,6 +47,151 @@ logger = logging.getLogger(__name__)
 
 
 _current_progress = None
+
+
+@dataclass
+class FailedTrack:
+    artist: str
+    title: str
+    reason: str
+    url: str | None = None
+
+
+def _single_line(text: str, max_len: int = 180) -> str:
+    condensed = " ".join(str(text).replace("\r", " ").replace("\n", " ").split())
+    if len(condensed) <= max_len:
+        return condensed
+    return condensed[: max_len - 3] + "..."
+
+
+def _summarize_exception(error: Exception) -> str:
+    message = _single_line(str(error))
+    lowered = message.lower()
+    if "failuretype" in lowered and "3082" in lowered:
+        return "Explicit content restricted (Apple failureType 3082)"
+    if "explicitcontentblockedforfuse" in lowered:
+        return "Explicit content restricted by Apple Music account settings"
+    if "pooltimeout" in lowered:
+        return "Network timeout (connection pool)"
+    if "timeout" in lowered:
+        return "Network timeout"
+    if "error getting webplayback" in lowered:
+        return "Apple webplayback request failed"
+    if "error getting license exchange" in lowered:
+        return "Apple license request failed"
+    if "http error 429" in lowered:
+        return "Rate limited by Apple Music (HTTP 429)"
+    return message
+
+
+def _is_expected_track_failure(reason: str) -> bool:
+    lowered = reason.lower()
+    markers = (
+        "network timeout",
+        "rate limited",
+        "explicit content restricted",
+        "apple webplayback request failed",
+        "apple license request failed",
+        "network error after retries",
+        "temp file missing",
+        "not streamable",
+        "unsupported media type",
+        "requested format is not available",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _extract_track_identity(item: DownloadItem) -> tuple[str, str, str | None]:
+    metadata = getattr(item, "media_metadata", {}) or {}
+    attributes = metadata.get("attributes", {}) if isinstance(metadata, dict) else {}
+    artist = attributes.get("artistName") or "Unknown Artist"
+    title = attributes.get("name") or attributes.get("title") or metadata.get("id") or "Unknown Title"
+    url = attributes.get("url")
+    return str(artist), str(title), (str(url) if url else None)
+
+
+def _write_failed_tracks_pdf(output_dir: Path, failed_tracks: list[FailedTrack]) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = output_dir / "failed_downloads_report.pdf"
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    page_width, page_height = letter
+    margin = 40
+    line_height = 14
+    section_gap = 8
+    content_width = page_width - (margin * 2)
+
+    c = canvas.Canvas(str(pdf_path), pagesize=letter)
+    c.setTitle("Failed Downloads Report")
+
+    def draw_header(page_index: int) -> float:
+        y_pos = page_height - margin
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(
+            margin,
+            y_pos,
+            f"Failed Downloads ({len(failed_tracks)} tracks) - Page {page_index}",
+        )
+        y_pos -= 20
+        c.setFont("Helvetica", 10)
+        c.drawString(
+            margin,
+            y_pos,
+            "Single-column report: Artist - Title, reason, and clickable Apple Music link.",
+        )
+        y_pos -= 18
+        c.line(margin, y_pos, page_width - margin, y_pos)
+        return y_pos - 12
+
+    page_index = 1
+    y = draw_header(page_index)
+
+    for idx, track in enumerate(failed_tracks, start=1):
+        title_line = f"{idx}. {track.artist} - {track.title}"
+        reason_line = f"Reason: {track.reason}"
+        wrapped_title = textwrap.wrap(title_line, width=100) or [title_line]
+        wrapped_reason = textwrap.wrap(reason_line, width=110) or [reason_line]
+
+        lines_needed = len(wrapped_title) + len(wrapped_reason) + 1
+        if track.url:
+            lines_needed += max(1, len(textwrap.wrap(track.url, width=110)))
+        block_height = lines_needed * line_height + section_gap
+
+        if y - block_height < margin:
+            c.showPage()
+            page_index += 1
+            y = draw_header(page_index)
+
+        c.setFont("Helvetica-Bold", 10)
+        for line in wrapped_title:
+            c.drawString(margin, y, line)
+            y -= line_height
+
+        c.setFont("Helvetica", 9)
+        for line in wrapped_reason:
+            c.drawString(margin, y, line)
+            y -= line_height
+
+        if track.url:
+            c.setFillColorRGB(0.0, 0.2, 0.7)
+            url_lines = textwrap.wrap(track.url, width=110) or [track.url]
+            for line in url_lines:
+                c.drawString(margin, y, line)
+                line_width = c.stringWidth(line, "Helvetica", 9)
+                c.linkURL(
+                    track.url,
+                    (margin, y - 2, min(margin + line_width, margin + content_width), y + 10),
+                    relative=0,
+                    thickness=0,
+                )
+                y -= line_height
+            c.setFillColorRGB(0, 0, 0)
+
+        y -= section_gap
+
+    c.save()
+    return pdf_path
 
 
 class ProgressDisplay:
@@ -294,6 +441,34 @@ async def main(config: CliConfig):
         download_path.mkdir(parents=True, exist_ok=True)
         click.echo(click.style(f"Using folder: {download_path}", fg="green"))
 
+    click.echo("Download speed:")
+    click.echo("[1] Stable (6)")
+    click.echo("[2] Balanced (8)")
+    click.echo("[3] Fast (12)")
+    click.echo("[4] Very Fast (16)")
+    click.echo("[5] Custom")
+    speed_map = {"1": 6, "2": 8, "3": 12, "4": 16}
+    while True:
+        speed_choice = click.prompt(
+            "Choose [1]-[5]",
+            type=str,
+            default="2",
+            show_default=False,
+            prompt_suffix=": ",
+        ).strip()
+        if speed_choice in speed_map:
+            selected_max_concurrency = speed_map[speed_choice]
+            break
+        if speed_choice == "5":
+            selected_max_concurrency = click.prompt(
+                "Enter custom max concurrency",
+                type=click.IntRange(min=1),
+                default=config.max_concurrency,
+                show_default=True,
+            )
+            break
+        click.echo("Please enter 1, 2, 3, 4, or 5.")
+
     use_artist_folders = click.confirm(
         "Group songs into artist folders?",
         default=False,
@@ -409,6 +584,7 @@ async def main(config: CliConfig):
             )
 
     error_count = 0
+    failed_tracks: list[FailedTrack] = []
     for url_index, url in enumerate(urls, 1):
         url_progress = click.style(f"[URL {url_index}/{len(urls)}]", dim=True)
         logger.info(url_progress + f' Processing "{url}"')
@@ -475,11 +651,10 @@ async def main(config: CliConfig):
             )
         except KeyboardInterrupt:
             exit(1)
-        except Exception:
+        except Exception as e:
             error_count += 1
             logger.error(
-                url_progress + f' Error processing "{url}"',
-                exc_info=not config.no_exceptions,
+                url_progress + f' Error processing "{url}": {_summarize_exception(e)}',
             )
             progress.finish()
             _current_progress = None
@@ -501,31 +676,72 @@ async def main(config: CliConfig):
 
         echo_stderr("Phase: downloading", progress)
         cpu_limit = max(1, os.cpu_count() or 1)
-        semaphore = asyncio.Semaphore(cpu_limit)
+        concurrency_limit = min(selected_max_concurrency, cpu_limit * 2, total_tracks)
+        logger.info(
+            click.style("[Download]", dim=True)
+            + f" Using concurrency={concurrency_limit}"
+        )
+        semaphore = asyncio.Semaphore(concurrency_limit)
 
         async def download_one(index: int, item: DownloadItem):
             nonlocal error_count
             async with semaphore:
                 current_item = item
-                for attempt in range(3):
+                max_attempts = 6
+                for attempt in range(max_attempts):
                     try:
                         await downloader.download(current_item)
                         break
-                    except (httpx.ReadError, httpcore.ReadError):
-                        if attempt >= 2:
+                    except (
+                        httpx.TransportError,
+                        httpcore.ReadError,
+                        httpcore.PoolTimeout,
+                    ):
+                        if attempt >= max_attempts - 1:
                             logger.warning(
                                 click.style(f"[Track {index}/{total_tracks}]", dim=True)
                                 + " Skipping track (network error)"
                             )
+                            artist, title, url = _extract_track_identity(current_item)
+                            failed_tracks.append(
+                                FailedTrack(
+                                    artist=artist,
+                                    title=title,
+                                    reason="Network error after retries",
+                                    url=url,
+                                )
+                            )
                             break
-                        current_item = await downloader.get_single_download_item_no_filter(
-                            current_item.media_metadata,
-                            current_item.playlist_metadata,
-                        )
+                        await asyncio.sleep(min(2.0, 0.25 * (2**attempt)))
+                        try:
+                            current_item = (
+                                await downloader.get_single_download_item_no_filter(
+                                    current_item.media_metadata,
+                                    current_item.playlist_metadata,
+                                )
+                            )
+                        except Exception:
+                            logger.debug(
+                                click.style(
+                                    f"[Track {index}/{total_tracks}]",
+                                    dim=True,
+                                )
+                                + " Failed to refresh track metadata, retrying with cached item",
+                                exc_info=True,
+                            )
                     except FileNotFoundError:
                         logger.warning(
                             click.style(f"[Track {index}/{total_tracks}]", dim=True)
                             + " Skipping track (temp file missing)"
+                        )
+                        artist, title, url = _extract_track_identity(current_item)
+                        failed_tracks.append(
+                            FailedTrack(
+                                artist=artist,
+                                title=title,
+                                reason="Temp file missing",
+                                url=url,
+                            )
                         )
                         break
                     except GamdlError as e:
@@ -533,15 +749,40 @@ async def main(config: CliConfig):
                             click.style(f"[Track {index}/{total_tracks}]", dim=True)
                             + f" Skipping track: {e}"
                         )
+                        if "Media file already exists" not in str(e):
+                            artist, title, url = _extract_track_identity(current_item)
+                            failed_tracks.append(
+                                FailedTrack(
+                                    artist=artist,
+                                    title=title,
+                                    reason=_summarize_exception(e),
+                                    url=url,
+                                )
+                            )
                         break
                     except KeyboardInterrupt:
                         exit(1)
-                    except Exception:
-                        error_count += 1
-                        logger.error(
-                            click.style(f"[Track {index}/{total_tracks}]", dim=True)
-                            + " Error downloading track",
-                            exc_info=not config.no_exceptions,
+                    except Exception as e:
+                        reason = _summarize_exception(e)
+                        if _is_expected_track_failure(reason):
+                            logger.warning(
+                                click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                                + f" Skipping track: {reason}"
+                            )
+                        else:
+                            error_count += 1
+                            logger.error(
+                                click.style(f"[Track {index}/{total_tracks}]", dim=True)
+                                + f" Error downloading track: {reason}",
+                            )
+                        artist, title, url = _extract_track_identity(current_item)
+                        failed_tracks.append(
+                            FailedTrack(
+                                artist=artist,
+                                title=title,
+                                reason=reason,
+                                url=url,
+                            )
                         )
                         break
                 async with progress_lock:
@@ -568,3 +809,15 @@ async def main(config: CliConfig):
             logger.debug("Temp cleanup failed", exc_info=True)
 
     logger.info(f"Finished with {error_count} error(s)")
+    if failed_tracks:
+        unique_failed = {
+            (t.artist, t.title, t.reason, t.url or ""): t for t in failed_tracks
+        }
+        ordered_failed = sorted(
+            unique_failed.values(),
+            key=lambda t: (t.artist.lower(), t.title.lower()),
+        )
+        report_path = _write_failed_tracks_pdf(download_path, ordered_failed)
+        logger.info(
+            f"Failed tracks report saved: {report_path}"
+        )

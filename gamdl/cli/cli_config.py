@@ -102,6 +102,18 @@ class CliConfig:
             is_flag=True,
         ),
     ]
+    max_concurrency: Annotated[
+        int,
+        option(
+            "--max-concurrency",
+            help=(
+                "Max parallel track downloads. "
+                "Lower values are more stable on slower networks."
+            ),
+            default=12,
+            type=click.IntRange(min=1),
+        ),
+    ]
     # API specific options
     cookies_path: Annotated[
         str,
